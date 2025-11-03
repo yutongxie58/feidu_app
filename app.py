@@ -1,11 +1,15 @@
 import streamlit as st
 from datetime import datetime, timedelta, time as dtime
+from zoneinfo import ZoneInfo  # Python 3.9+
 import json, csv, os
 
-APP_TITLE = "费渡模拟器 · FeiDu v0.3（配置化 + 持久化）"
+# ==== 时区：按需改，比如出差东京就用 "Asia/Tokyo" ====
+TZ = ZoneInfo("America/Los_Angeles")
+
+APP_TITLE = "费渡模拟器 · FeiDu v0.3（配置化 + 持久化 + 时区修正）"
 LOG_PATH = "feidu_logs.csv"
-DATA_DIR = "data"  # 保存今日状态 data/YYYY-MM-DD.json
-CONFIG_PATH = "routine.json"
+DATA_DIR = "data"            # 保存今日状态 data/YYYY-MM-DD.json
+CONFIG_PATH = "routine.json" # 可配置日程
 
 # ---------------------------
 # 细节清单（展示用，不计进度）
@@ -63,10 +67,10 @@ OVERTIME_FINISH_GRACE_MIN = 10 # 段末后宽限 10 分钟未“结束” → �
 LOCK_MIN  = 5                  # 锁定 5 分钟
 
 # ---------------------------
-# 工具函数
+# 工具函数（带时区）
 # ---------------------------
 def now_dt() -> datetime:
-    return datetime.now()
+    return datetime.now(TZ)
 
 def today_date_str() -> str:
     return now_dt().date().isoformat()
@@ -74,7 +78,8 @@ def today_date_str() -> str:
 def combine_today(t_hhmm: str) -> datetime:
     h, m = map(int, t_hhmm.split(":"))
     d = now_dt().date()
-    return datetime(d.year, d.month, d.day, h, m, 0)
+    # 生成时区感知的 datetime
+    return datetime(d.year, d.month, d.day, h, m, 0, tzinfo=TZ)
 
 def seconds_left(dt_end: datetime) -> int:
     return max(0, int((dt_end - now_dt()).total_seconds()))
@@ -107,6 +112,7 @@ def save_today_state():
         "date": today_date_str(),
         "progress": st.session_state["progress"],
         "rest_mode": st.session_state["rest_mode"],
+        "first_visit_today": st.session_state.get("first_visit_today", False),
         "blocks": []
     }
     for b in st.session_state["blocks"]:
@@ -126,7 +132,6 @@ def save_today_state():
         json.dump(out, f, ensure_ascii=False, indent=2)
 
 def try_restore_today_state():
-    # 如果有当天文件，恢复进度和开始/结束标记
     path = os.path.join(DATA_DIR, f"{today_date_str()}.json")
     if not os.path.exists(path):
         return
@@ -135,6 +140,7 @@ def try_restore_today_state():
             data = json.load(f)
         st.session_state["progress"] = data.get("progress", 0)
         st.session_state["rest_mode"] = data.get("rest_mode", False)
+        st.session_state["first_visit_today"] = data.get("first_visit_today", True)
 
         saved_by_key = {b["key"]: b for b in data.get("blocks", [])}
         for b in st.session_state["blocks"]:
@@ -179,19 +185,6 @@ def is_locked():
         return False
     return True
 
-def auto_refresh_every(seconds=30, key="auto_refresh"):
-    """
-    每隔 seconds 触发一次页面轻刷新，不会丢失 session 状态。
-    """
-    ts_key = f"{key}_ts"
-    now = now_dt()
-    last = st.session_state.get(ts_key)
-    if last is None:
-        st.session_state[ts_key] = now
-    elif (now - last).total_seconds() >= seconds:
-        st.session_state[ts_key] = now
-        st.experimental_rerun()
-
 # ---------------------------
 # 状态初始化：读配置 + 当天状态
 # ---------------------------
@@ -223,6 +216,9 @@ def ensure_state():
         st.session_state["lock_until"] = None
     if "rest_mode" not in st.session_state:
         st.session_state["rest_mode"] = False
+    if "first_visit_today" not in st.session_state:
+        # 首次打开保护：当天第一次进入页面不立刻惩罚
+        st.session_state["first_visit_today"] = True
     if "last_date" not in st.session_state:
         st.session_state["last_date"] = now_dt().date()
 
@@ -246,7 +242,7 @@ if st.session_state["config_loaded"]:
 else:
     st.caption("⚠️ 未找到 routine.json，使用内置默认日程")
 
-# 顶部：休息日 + 清零
+# 顶部：休息日 + 清零 + 重载日程
 c1, c2, c3 = st.columns([3,2,2])
 
 with c1:
@@ -260,16 +256,18 @@ with c2:
             b["started"] = b["finished"] = False
             b["start_time"] = b["finish_time"] = None
             b["start_progress_awarded"] = b["finish_progress_awarded"] = False
+        # 任何有效操作后，关闭“首次打开保护”
+        st.session_state["first_visit_today"] = False
         save_today_state()
         st.rerun()
 
 with c3:
     if st.button("↻ 重载日程"):
-        # 清掉配置相关缓存，下一次 ensure_state() 会重新读取 routine.json
         for k in ("config_loaded", "week_rules", "blocks"):
             if k in st.session_state:
                 del st.session_state[k]
-        # 不动进度和当天存档
+        # 关闭“首次打开保护”，避免重载后马上锁
+        st.session_state["first_visit_today"] = False
         st.rerun()
 
 # 进度条 & 时间
@@ -278,19 +276,31 @@ if st.session_state["rest_mode"]:
 else:
     st.progress(st.session_state["progress"]/100.0, text=f"今日进度：{st.session_state['progress']}%")
 st.write(f"当前时间：**{now_dt().strftime('%H:%M:%S')}**")
-auto_refresh_every(30)  # 每 30 秒自动刷新一次
 
-# 锁定覆盖
+# 自动刷新（方案A：零依赖）
+def auto_refresh_every(seconds=30, key="auto_refresh"):
+    ts_key = f"{key}_ts"
+    now = now_dt()
+    last = st.session_state.get(ts_key)
+    if last is None:
+        st.session_state[ts_key] = now
+    elif (now - last).total_seconds() >= seconds:
+        st.session_state[ts_key] = now
+        st.experimental_rerun()
+
+auto_refresh_every(30)
+
+# 锁定覆盖（休息日不锁）
 if (not st.session_state["rest_mode"]) and is_locked():
     remaining = seconds_left(st.session_state["lock_until"])
     st.error(f"⛔ 锁定中（剩余 {remaining//60} 分 {remaining%60} 秒）。")
     st.stop()
 
-# 顶部轻提醒：当前在段内但未开始
+# 顶部轻提醒：当前在段内但未开始（只提示一次，不锁）
 current_blocks = [b for b in st.session_state["blocks"] if b["start"] <= now_dt() <= b["end"]]
 if current_blocks:
     b = current_blocks[0]
-    if not b["started"] and not st.session_state.get(f"nudged_{b['key']}"):
+    if (not b["started"]) and (not st.session_state.get(f"nudged_{b['key']}")):
         st.toast(f"现在是『{b['label']}』，点“开始打卡”吧。", icon="⏰")
         st.session_state[f"nudged_{b['key']}"] = True
 
@@ -318,6 +328,7 @@ for idx, block in enumerate(st.session_state["blocks"]):
         st.caption("休息日：本时段不需打卡。")
         continue
 
+    # 周规则提示只在对应 block 显示
     weekday_iso = now_dt().isoweekday()
     rules_today = st.session_state.get("week_rules", {}).get(str(weekday_iso), {})
     rule_for_this = rules_today.get(block["key"], {})
@@ -331,14 +342,23 @@ for idx, block in enumerate(st.session_state["blocks"]):
     if block["finished"]: tags.append("已结束")
     st.write("状态：" + (" / ".join(tags) if tags else "未打卡"))
 
-    # 惩罚自动检查
+    # —— 自动惩罚检查（加入“首次打开保护”）——
     if in_block(block):
+        # 未开始且超过宽限：首次打开不锁，只警告；之后恢复严格
         if not block["started"] and now_dt() > grace_deadline(block):
-            trigger_lock(reason=f"no-start: {block['label']}")
-            st.rerun()
+            if not st.session_state.get("first_visit_today", False):
+                trigger_lock(reason=f"no-start: {block['label']}")
+                st.rerun()
+            else:
+                st.warning(f"已超过『{block['label']}』开始宽限。点“开始打卡”立即进入；从现在起恢复严格模式。")
+
+        # 已开始但未结束且超过段末宽限：首次打开同样放过一次
         if block["started"] and (not block["finished"]) and now_dt() > overtime_deadline(block):
-            trigger_lock(reason=f"no-finish: {block['label']}")
-            st.rerun()
+            if not st.session_state.get("first_visit_today", False):
+                trigger_lock(reason=f"no-finish: {block['label']}")
+                st.rerun()
+            else:
+                st.warning(f"『{block['label']}』已超时未结束。点“结束打卡”完成；从现在起恢复严格模式。")
 
     # 操作按钮
     cA, cB, cC = st.columns([1,1,2])
@@ -353,6 +373,8 @@ for idx, block in enumerate(st.session_state["blocks"]):
                 if not block["start_progress_awarded"]:
                     add_progress(PROG_ON_START)
                     block["start_progress_awarded"] = True
+                # 任何有效操作后，关闭“首次打开保护”
+                st.session_state["first_visit_today"] = False
                 save_today_state()
                 st.rerun()
     with cB:
@@ -361,6 +383,7 @@ for idx, block in enumerate(st.session_state["blocks"]):
                 st.error("你还没有开始。")
             else:
                 if now_dt() > overtime_deadline(block):
+                    # 首次打开保护在按钮操作后即关闭，这里直接走严格逻辑
                     trigger_lock(reason=f"late-finish: {block['label']}")
                     st.rerun()
                 block["finished"] = True
@@ -369,11 +392,13 @@ for idx, block in enumerate(st.session_state["blocks"]):
                 if not block["finish_progress_awarded"]:
                     add_progress(PROG_ON_FINISH)
                     block["finish_progress_awarded"] = True
+                st.session_state["first_visit_today"] = False
                 save_today_state()
                 st.rerun()
     with cC:
         if st.button("我卡住了", key=f"stuck_{idx}"):
             st.session_state["lock_until"] = now_dt() + timedelta(seconds=60)
             write_log("SOFT_LOCK(I'm stuck)", block["label"])
+            st.session_state["first_visit_today"] = False
             save_today_state()
             st.rerun()
