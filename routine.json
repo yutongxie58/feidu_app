@@ -1,0 +1,13 @@
+{
+  "blocks": [
+    {"key":"morning","label":"早晨启动 (5:30–8:00)","start":"05:30","end":"08:00","enabled":true},
+    {"key":"am","label":"上午专注 (8:00–13:00)","start":"08:00","end":"13:00","enabled":true},
+    {"key":"noon","label":"午间复苏 (13:00–14:00)","start":"13:00","end":"14:00","enabled":true},
+    {"key":"pm","label":"下午冲刺 (14:00–18:00)","start":"14:00","end":"18:00","enabled":true},
+    {"key":"evening","label":"晚间自由 (18:00–22:00)","start":"18:00","end":"22:00","enabled":true}
+  ],
+  "week_rules": {
+    "3": {"evening": {"note":"今晚洗澡洗头 ✔"}},
+    "7": {"evening": {"note":"今晚洗澡洗头 ✔"}}
+  }
+}
