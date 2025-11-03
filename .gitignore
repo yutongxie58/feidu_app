@@ -3,3 +3,10 @@ __pycache__/
 .DS_Store
 data/*.json
 feidu_logs.csv
+assets/*.mp4
+assets/*.mov
+assets/*.m4v
+assets/*.webm
+assets/*.jpg
+assets/*.jpeg
+assets/*.png
