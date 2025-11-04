@@ -1,16 +1,9 @@
 {
   "blocks": [
     {
-      "key": "wake",
-      "label": "起床 (5:30–6:00)",
+      "key": "morning_start",
+      "label": "起床 + 早餐 (5:30–7:00)",
       "start": "05:30",
-      "end": "06:00",
-      "enabled": true
-    },
-    {
-      "key": "breakfast",
-      "label": "早餐 (6:00–7:00)",
-      "start": "06:00",
       "end": "07:00",
       "enabled": true
     },
@@ -51,14 +44,21 @@
     },
     {
       "key": "evening",
-      "label": "晚间自由 (18:00–22:00)",
+      "label": "晚间自由 (18:00–21:45)",
       "start": "18:00",
-      "end": "22:00",
+      "end": "21:45",
+      "enabled": true
+    },
+    {
+      "key": "night_prepare",
+      "label": "睡前准备 (21:45–22:30)",
+      "start": "21:45",
+      "end": "22:30",
       "enabled": true
     }
   ],
   "week_rules": {
-    "3": { "evening": { "note": "今晚记得洗澡 ✔" } },
-    "7": { "evening": { "note": "今晚记得洗澡 ✔" } }
+    "3": { "night_prepare": { "note": "今晚记得洗澡 ✔" } },
+    "7": { "night_prepare": { "note": "今晚记得洗澡 ✔" } }
   }
 }
